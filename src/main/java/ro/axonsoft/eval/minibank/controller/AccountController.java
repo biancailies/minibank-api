@@ -1,10 +1,8 @@
 package ro.axonsoft.eval.minibank.controller;
 
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import ro.axonsoft.eval.minibank.dto.AccountResponse;
+import ro.axonsoft.eval.minibank.dto.AccountsPageResponse;
 import ro.axonsoft.eval.minibank.dto.CreateAccountRequest;
 import ro.axonsoft.eval.minibank.service.AccountService;
 
@@ -20,5 +18,15 @@ public class AccountController {
     @PostMapping
     public AccountResponse createAccount(@RequestBody CreateAccountRequest request) {
         return accountService.createAccount(request);
+    }
+
+    @GetMapping("/{id}")
+    public AccountsPageResponse getAllAccounts(@RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "10") int size){
+        return accountService.getAllAccounts(page, size);
+    }
+
+    @GetMapping
+    public AccountResponse getAccountById(@RequestParam long id) {
+        return accountService.getAccountById(id);
     }
 }
