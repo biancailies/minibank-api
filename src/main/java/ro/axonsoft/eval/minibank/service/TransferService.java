@@ -1,9 +1,13 @@
 package ro.axonsoft.eval.minibank.service;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ro.axonsoft.eval.minibank.dto.CreateTransferRequest;
 import ro.axonsoft.eval.minibank.dto.TransferResponse;
+import ro.axonsoft.eval.minibank.dto.TransfersPageResponse;
 import ro.axonsoft.eval.minibank.exception.BadRequestException;
 import ro.axonsoft.eval.minibank.exception.ResourceNotFoundException;
 import ro.axonsoft.eval.minibank.model.*;
@@ -15,6 +19,8 @@ import ro.axonsoft.eval.minibank.util.IbanValidator;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 @Service
@@ -96,6 +102,27 @@ public class TransferService {
 
         if (targetAccount == null) {
             throw new ResourceNotFoundException("Target account not found");
+        }
+
+        if (!normSourceIban.equals(SYSTEM_IBAN) && sourceAccount.getAccountType() == AccountType.SAVINGS) {
+            BigDecimal currentTransferEur = convertToEur(amount, sourceAccount.getCurrency());
+            BigDecimal dailyTotalEur = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_EVEN);
+
+            List<Transfer> allTransfers = transferRepository.findAll();
+            Instant now = Instant.now();
+
+            for (Transfer oldTransfer : allTransfers) {
+                if (oldTransfer.getSourceIban().equals(normSourceIban) && isSameDay(oldTransfer.getCreatedAt(), now)) {
+                    BigDecimal oldTransferEur = convertToEur(oldTransfer.getAmount(), oldTransfer.getCurrency());
+                    dailyTotalEur = dailyTotalEur.add(oldTransferEur).setScale(2, RoundingMode.HALF_EVEN);
+                }
+            }
+
+            BigDecimal totalWithCurrent = dailyTotalEur.add(currentTransferEur).setScale(2, RoundingMode.HALF_EVEN);
+
+            if (totalWithCurrent.compareTo(new BigDecimal("5000.00")) > 0) {
+                throw new BadRequestException("Daily savings transfer limit exceeded");
+            }
         }
 
         if (!normSourceIban.equals(SYSTEM_IBAN)) {
@@ -227,4 +254,99 @@ public class TransferService {
         return transferResponse;
     }
 
+    public TransferResponse getTransferById(Long id) {
+        Transfer transfer = transferRepository.findById(id).orElse(null);
+
+        if (transfer == null) {
+            throw new ResourceNotFoundException("Transfer not found");
+        }
+
+        TransferResponse transferResponse = new TransferResponse();
+        transferResponse.setId(transfer.getId());
+        transferResponse.setSourceIban(transfer.getSourceIban());
+        transferResponse.setTargetIban(transfer.getTargetIban());
+        transferResponse.setAmount(transfer.getAmount());
+        transferResponse.setCurrency(transfer.getCurrency());
+        transferResponse.setTargetCurrency(transfer.getTargetCurrency());
+        transferResponse.setExchangeRate(transfer.getExchangeRate());
+        transferResponse.setConvertedAmount(transfer.getConvertedAmount());
+        transferResponse.setIdempotencyKey(transfer.getIdempotencyKey());
+        transferResponse.setCreatedAt(transfer.getCreatedAt());
+
+        return transferResponse;
+    }
+
+    public TransfersPageResponse getTransfers(String iban, Instant fromDate, Instant toDate, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size);
+
+        Page<Transfer> transfersPage = transferRepository.findAll(pageable);
+        List<Transfer> transfersList = transfersPage.getContent();
+        List<TransferResponse> transferResponses = new ArrayList<>();
+
+        for (Transfer transfer : transfersList) {
+            boolean ok = true;
+
+            if (iban != null && !iban.isBlank()) {
+                String normalizedIban = IbanValidator.normalizeIban(iban).toUpperCase();
+
+                if (!transfer.getSourceIban().equals(normalizedIban) && !transfer.getTargetIban().equals(normalizedIban)) {
+                    ok = false;
+                }
+            }
+
+            if (fromDate != null) {
+                if (transfer.getCreatedAt().isBefore(fromDate)) {
+                    ok = false;
+                }
+            }
+
+            if (toDate != null) {
+                if (transfer.getCreatedAt().isAfter(toDate)) {
+                    ok = false;
+                }
+            }
+
+            if (ok) {
+                TransferResponse transferResponse = new TransferResponse();
+                transferResponse.setId(transfer.getId());
+                transferResponse.setSourceIban(transfer.getSourceIban());
+                transferResponse.setTargetIban(transfer.getTargetIban());
+                transferResponse.setAmount(transfer.getAmount());
+                transferResponse.setCurrency(transfer.getCurrency());
+                transferResponse.setTargetCurrency(transfer.getTargetCurrency());
+                transferResponse.setExchangeRate(transfer.getExchangeRate());
+                transferResponse.setConvertedAmount(transfer.getConvertedAmount());
+                transferResponse.setIdempotencyKey(transfer.getIdempotencyKey());
+                transferResponse.setCreatedAt(transfer.getCreatedAt());
+
+                transferResponses.add(transferResponse);
+            }
+        }
+
+        TransfersPageResponse response = new TransfersPageResponse();
+        response.setContent(transferResponses);
+        response.setTotalElements(transferResponses.size());
+        response.setTotalPages(1);
+        response.setNumber(page);
+        response.setSize(size);
+
+        return response;
+    }
+
+    private BigDecimal convertToEur(BigDecimal amount, Currency currency) {
+        BigDecimal eurToRon = exchangeRateService.getExchangeRate(Currency.EUR);
+
+        if (currency == Currency.EUR) {
+            return amount.setScale(2, RoundingMode.HALF_EVEN);
+        }
+
+        BigDecimal sourceToRon = exchangeRateService.getExchangeRate(currency);
+        BigDecimal rateToEur = sourceToRon.divide(eurToRon, 6, RoundingMode.HALF_EVEN);
+
+        return amount.multiply(rateToEur).setScale(2, RoundingMode.HALF_EVEN);
+    }
+
+    private boolean isSameDay(Instant instant1, Instant instant2) {
+        return instant1.atZone(java.time.ZoneOffset.UTC).toLocalDate().equals(instant2.atZone(java.time.ZoneOffset.UTC).toLocalDate());
+    }
 }

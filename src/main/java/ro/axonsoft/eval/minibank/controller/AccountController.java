@@ -2,10 +2,7 @@ package ro.axonsoft.eval.minibank.controller;
 
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
-import ro.axonsoft.eval.minibank.dto.AccountResponse;
-import ro.axonsoft.eval.minibank.dto.AccountsPageResponse;
-import ro.axonsoft.eval.minibank.dto.CreateAccountRequest;
-import ro.axonsoft.eval.minibank.dto.TransactionsPageResponse;
+import ro.axonsoft.eval.minibank.dto.*;
 import ro.axonsoft.eval.minibank.service.AccountService;
 
 
