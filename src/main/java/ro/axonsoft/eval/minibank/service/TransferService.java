@@ -1,16 +1,24 @@
 package ro.axonsoft.eval.minibank.service;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import ro.axonsoft.eval.minibank.config.DataInitializer;
 import ro.axonsoft.eval.minibank.dto.CreateTransferRequest;
 import ro.axonsoft.eval.minibank.dto.TransferResponse;
 import ro.axonsoft.eval.minibank.dto.TransfersPageResponse;
 import ro.axonsoft.eval.minibank.exception.BadRequestException;
+import ro.axonsoft.eval.minibank.exception.BusinessConflictException;
 import ro.axonsoft.eval.minibank.exception.ResourceNotFoundException;
-import ro.axonsoft.eval.minibank.model.*;
+import ro.axonsoft.eval.minibank.model.Account;
+import ro.axonsoft.eval.minibank.model.AccountType;
+import ro.axonsoft.eval.minibank.model.Currency;
+import ro.axonsoft.eval.minibank.model.Transaction;
+import ro.axonsoft.eval.minibank.model.TransactionType;
+import ro.axonsoft.eval.minibank.model.Transfer;
 import ro.axonsoft.eval.minibank.repository.AccountRepository;
 import ro.axonsoft.eval.minibank.repository.TransactionRepository;
 import ro.axonsoft.eval.minibank.repository.TransferRepository;
@@ -18,22 +26,29 @@ import ro.axonsoft.eval.minibank.util.IbanValidator;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.Instant;
+import java.time.*;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
 @Service
 public class TransferService {
-    private static final String SYSTEM_IBAN = "RO49AAAA1B31007593840000";
+
+    private static final BigDecimal ZERO = new BigDecimal("0.00");
+    private static final BigDecimal SAVINGS_DAILY_LIMIT_EUR = new BigDecimal("5000.00");
 
     private final ExchangeRateService exchangeRateService;
-
     private final TransferRepository transferRepository;
     private final AccountRepository accountRepository;
     private final TransactionRepository transactionRepository;
 
-    public TransferService(ExchangeRateService exchangeRateService, TransferRepository transferRepository, AccountRepository accountRepository, TransactionRepository transactionRepository) {
+    public TransferService(
+            ExchangeRateService exchangeRateService,
+            TransferRepository transferRepository,
+            AccountRepository accountRepository,
+            TransactionRepository transactionRepository
+    ) {
         this.exchangeRateService = exchangeRateService;
         this.transferRepository = transferRepository;
         this.accountRepository = accountRepository;
@@ -42,311 +57,271 @@ public class TransferService {
 
     @Transactional
     public TransferResponse createTransfer(CreateTransferRequest request) {
-        String sourceIban = request.getSourceIban();
-        String targetIban = request.getTargetIban();
-        BigDecimal amount = request.getAmount();
-        String idempotencyKey = request.getIdempotencyKey();
+        String sourceIban = normalizeRequiredIban(request.getSourceIban(), "Invalid source IBAN");
+        String targetIban = normalizeRequiredIban(request.getTargetIban(), "Invalid target IBAN");
+        BigDecimal amount = normalizeAmount(request.getAmount());
+        String idempotencyKey = normalizeIdempotencyKey(request.getIdempotencyKey());
 
-        String normSourceIban = IbanValidator.normalizeIban(sourceIban).toUpperCase();
-        String normTargetIban = IbanValidator.normalizeIban(targetIban).toUpperCase();
-
-        if (!IbanValidator.isValidIban(normSourceIban)) {
-            throw new BadRequestException("Invalid source IBAN");
+        if (sourceIban.equals(targetIban)) {
+            throw new BadRequestException("Source IBAN and target IBAN cannot be the same");
         }
 
-        if (!IbanValidator.isValidIban(normTargetIban)) {
-            throw new BadRequestException("Invalid target IBAN");
+        if (!IbanValidator.isSepaCountry(IbanValidator.getCountryCode(sourceIban)) ||
+                !IbanValidator.isSepaCountry(IbanValidator.getCountryCode(targetIban))) {
+            throw new BusinessConflictException("Only SEPA transfers are allowed");
         }
 
-        String sourceCountryCode = IbanValidator.getCountryCode(normSourceIban);
-        String targetCountryCode = IbanValidator.getCountryCode(normTargetIban);
-
-        if (!IbanValidator.isSepaCountry(sourceCountryCode) || !IbanValidator.isSepaCountry(targetCountryCode)) {
-            throw new BadRequestException("Only SEPA transfers are allowed");
-        }
-
-        if(amount.equals(BigDecimal.ZERO) || amount.compareTo(BigDecimal.ZERO) < 0) {
-            throw new BadRequestException("Amount must be greater than 0");
-        }
-
-        if(normSourceIban.equals(normTargetIban)) {
-            throw new BadRequestException("Source Iban and Target Iban cannot be the same");
-        }
-
-        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-            Optional<Transfer> existingTransfer = transferRepository.findByIdempotencyKey(idempotencyKey);
-
-            if (existingTransfer.isPresent()) {
-                Transfer transfer = existingTransfer.get();
-                TransferResponse transferResponse = new TransferResponse();
-                transferResponse.setSourceIban(transfer.getSourceIban());
-                transferResponse.setTargetIban(transfer.getTargetIban());
-                transferResponse.setAmount(transfer.getAmount());
-                transferResponse.setCurrency(transfer.getCurrency());
-                transferResponse.setTargetCurrency(transfer.getTargetCurrency());
-                transferResponse.setExchangeRate(transfer.getExchangeRate());
-                transferResponse.setConvertedAmount(transfer.getConvertedAmount());
-                transferResponse.setIdempotencyKey(transfer.getIdempotencyKey());
-                transferResponse.setCreatedAt(transfer.getCreatedAt());
-                transferResponse.setId(transfer.getId());
-                return transferResponse;
+        if (idempotencyKey != null) {
+            Optional<Transfer> existing = transferRepository.findByIdempotencyKey(idempotencyKey);
+            if (existing.isPresent()) {
+                return toTransferResponse(existing.get());
             }
         }
 
-        Account sourceAccount = accountRepository.findByIban(normSourceIban);
-        Account targetAccount = accountRepository.findByIban(normTargetIban);
+        List<String> ibansToLock = new ArrayList<>(List.of(sourceIban, targetIban));
+        ibansToLock.sort(Comparator.naturalOrder());
 
-        if (sourceAccount == null) {
-            throw new ResourceNotFoundException("Source account not found");
-        }
+        List<Account> lockedAccounts = accountRepository.findAllByIbanInForUpdate(ibansToLock);
+        if (lockedAccounts.size() != 2) {
+            boolean sourceExists = lockedAccounts.stream().anyMatch(a -> a.getIban().equals(sourceIban));
+            boolean targetExists = lockedAccounts.stream().anyMatch(a -> a.getIban().equals(targetIban));
 
-        if (targetAccount == null) {
+            if (!sourceExists) {
+                throw new ResourceNotFoundException("Source account not found");
+            }
             throw new ResourceNotFoundException("Target account not found");
         }
 
-        if (!normSourceIban.equals(SYSTEM_IBAN) && sourceAccount.getAccountType() == AccountType.SAVINGS) {
-            BigDecimal currentTransferEur = convertToEur(amount, sourceAccount.getCurrency());
-            BigDecimal dailyTotalEur = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_EVEN);
+        Account sourceAccount = lockedAccounts.stream()
+                .filter(a -> a.getIban().equals(sourceIban))
+                .findFirst()
+                .orElseThrow();
 
-            List<Transfer> allTransfers = transferRepository.findAll();
-            Instant now = Instant.now();
+        Account targetAccount = lockedAccounts.stream()
+                .filter(a -> a.getIban().equals(targetIban))
+                .findFirst()
+                .orElseThrow();
 
-            for (Transfer oldTransfer : allTransfers) {
-                if (oldTransfer.getSourceIban().equals(normSourceIban) && isSameDay(oldTransfer.getCreatedAt(), now)) {
-                    BigDecimal oldTransferEur = convertToEur(oldTransfer.getAmount(), oldTransfer.getCurrency());
-                    dailyTotalEur = dailyTotalEur.add(oldTransferEur).setScale(2, RoundingMode.HALF_EVEN);
-                }
-            }
-
-            BigDecimal totalWithCurrent = dailyTotalEur.add(currentTransferEur).setScale(2, RoundingMode.HALF_EVEN);
-
-            if (totalWithCurrent.compareTo(new BigDecimal("5000.00")) > 0) {
-                throw new BadRequestException("Daily savings transfer limit exceeded");
-            }
+        if (!sourceIban.equals(DataInitializer.SYSTEM_IBAN) && sourceAccount.getAccountType() == AccountType.SAVINGS) {
+            validateSavingsDailyLimit(sourceAccount, amount);
         }
 
-        if (!normSourceIban.equals(SYSTEM_IBAN)) {
+        if (!sourceIban.equals(DataInitializer.SYSTEM_IBAN)) {
             if (sourceAccount.getBalance().compareTo(amount) < 0) {
-                throw new BadRequestException("Insufficient funds");
+                throw new BusinessConflictException("Insufficient funds");
             }
-
-            BigDecimal newSourceBalance = sourceAccount.getBalance().subtract(amount);
-            sourceAccount.setBalance(newSourceBalance);
-            accountRepository.save(sourceAccount);
+            sourceAccount.setBalance(sourceAccount.getBalance().subtract(amount).setScale(2, RoundingMode.HALF_EVEN));
         }
 
-        Currency currency = sourceAccount.getCurrency();
+        Currency sourceCurrency = sourceAccount.getCurrency();
         Currency targetCurrency = targetAccount.getCurrency();
+
         BigDecimal exchangeRate = null;
         BigDecimal convertedAmount = null;
+        BigDecimal creditedAmount = amount;
 
-        if(!sourceAccount.getCurrency().equals(targetAccount.getCurrency())) {
-            BigDecimal sourceToRon = exchangeRateService.getExchangeRate(sourceAccount.getCurrency());
-            BigDecimal targetToRon = exchangeRateService.getExchangeRate(targetAccount.getCurrency());
+        if (!sourceCurrency.equals(targetCurrency)) {
+            BigDecimal sourceToRon = exchangeRateService.getExchangeRate(sourceCurrency);
+            BigDecimal targetToRon = exchangeRateService.getExchangeRate(targetCurrency);
 
             exchangeRate = sourceToRon.divide(targetToRon, 6, RoundingMode.HALF_EVEN);
             convertedAmount = amount.multiply(exchangeRate).setScale(2, RoundingMode.HALF_EVEN);
+            creditedAmount = convertedAmount;
         }
 
-        Transfer transfer = new Transfer();
+        if (!targetIban.equals(DataInitializer.SYSTEM_IBAN)) {
+            targetAccount.setBalance(targetAccount.getBalance().add(creditedAmount).setScale(2, RoundingMode.HALF_EVEN));
+        }
 
-        transfer.setSourceIban(normSourceIban);
-        transfer.setTargetIban(normTargetIban);
+        Instant now = Instant.now();
+
+        Transfer transfer = new Transfer();
+        transfer.setSourceIban(sourceIban);
+        transfer.setTargetIban(targetIban);
         transfer.setAmount(amount);
-        transfer.setCurrency(currency);
+        transfer.setCurrency(sourceCurrency);
         transfer.setTargetCurrency(targetCurrency);
         transfer.setExchangeRate(exchangeRate);
         transfer.setConvertedAmount(convertedAmount);
         transfer.setIdempotencyKey(idempotencyKey);
-        transfer.setCreatedAt(Instant.now());
+        transfer.setCreatedAt(now);
 
-
-
-        BigDecimal newTargetBalance;
-
-        if (convertedAmount == null) {
-            newTargetBalance = targetAccount.getBalance().add(amount);
-        } else {
-            newTargetBalance = targetAccount.getBalance().add(convertedAmount);
-        }
-
-        if(!targetAccount.getIban().equals(SYSTEM_IBAN)) {
-            targetAccount.setBalance(newTargetBalance);
-            accountRepository.save(targetAccount);
-        }
-
-        Transfer saveTransfer = transferRepository.save(transfer);
-
-        if (sourceAccount.getIban().equals(SYSTEM_IBAN)) {
-            Transaction newTransaction = new Transaction();
-            newTransaction.setAccount(targetAccount);
-            newTransaction.setTimestamp(saveTransfer.getCreatedAt());
-            newTransaction.setType(TransactionType.DEPOSIT);
-
-            if (convertedAmount == null) {
-                newTransaction.setAmount(amount);
-            } else {
-                newTransaction.setAmount(convertedAmount);
+        try {
+            transfer = transferRepository.saveAndFlush(transfer);
+        } catch (DataIntegrityViolationException e) {
+            if (idempotencyKey != null) {
+                Transfer existing = transferRepository.findByIdempotencyKey(idempotencyKey)
+                        .orElseThrow(() -> e);
+                return toTransferResponse(existing);
             }
-
-            newTransaction.setCurrency(targetAccount.getCurrency());
-            newTransaction.setBalanceAfter(targetAccount.getBalance());
-            newTransaction.setCounterpartyIban(null);
-            newTransaction.setTransferId(saveTransfer.getId());
-
-            transactionRepository.save(newTransaction);
-        }
-        else if (targetAccount.getIban().equals(SYSTEM_IBAN)) {
-            Transaction newTransaction = new Transaction();
-            newTransaction.setAccount(sourceAccount);
-            newTransaction.setTimestamp(saveTransfer.getCreatedAt());
-            newTransaction.setType(TransactionType.WITHDRAWAL);
-            newTransaction.setAmount(amount);
-            newTransaction.setCurrency(sourceAccount.getCurrency());
-            newTransaction.setBalanceAfter(sourceAccount.getBalance());
-            newTransaction.setCounterpartyIban(null);
-            newTransaction.setTransferId(saveTransfer.getId());
-
-            transactionRepository.save(newTransaction);
-        }
-        else {
-            Transaction sourceTransaction = new Transaction();
-            sourceTransaction.setAccount(sourceAccount);
-            sourceTransaction.setTimestamp(saveTransfer.getCreatedAt());
-            sourceTransaction.setType(TransactionType.TRANSFER_OUT);
-            sourceTransaction.setAmount(amount);
-            sourceTransaction.setCurrency(sourceAccount.getCurrency());
-            sourceTransaction.setBalanceAfter(sourceAccount.getBalance());
-            sourceTransaction.setCounterpartyIban(targetAccount.getIban());
-            sourceTransaction.setTransferId(saveTransfer.getId());
-            transactionRepository.save(sourceTransaction);
-
-            Transaction targetTransaction = new Transaction();
-            targetTransaction.setAccount(targetAccount);
-            targetTransaction.setTimestamp(saveTransfer.getCreatedAt());
-            targetTransaction.setType(TransactionType.TRANSFER_IN);
-
-            if (convertedAmount == null) {
-                targetTransaction.setAmount(amount);
-            } else {
-                targetTransaction.setAmount(convertedAmount);
-            }
-
-            targetTransaction.setCurrency(targetAccount.getCurrency());
-            targetTransaction.setBalanceAfter(targetAccount.getBalance());
-            targetTransaction.setCounterpartyIban(sourceAccount.getIban());
-            targetTransaction.setTransferId(saveTransfer.getId());
-            transactionRepository.save(targetTransaction);
+            throw e;
         }
 
-        TransferResponse transferResponse = new TransferResponse();
-        transferResponse.setId(saveTransfer.getId());
-        transferResponse.setSourceIban(saveTransfer.getSourceIban());
-        transferResponse.setTargetIban(saveTransfer.getTargetIban());
-        transferResponse.setAmount(saveTransfer.getAmount());
-        transferResponse.setCurrency(saveTransfer.getCurrency());
-        transferResponse.setTargetCurrency(saveTransfer.getTargetCurrency());
-        transferResponse.setExchangeRate(saveTransfer.getExchangeRate());
-        transferResponse.setConvertedAmount(saveTransfer.getConvertedAmount());
-        transferResponse.setIdempotencyKey(saveTransfer.getIdempotencyKey());
-        transferResponse.setCreatedAt(saveTransfer.getCreatedAt());
+        accountRepository.save(sourceAccount);
+        accountRepository.save(targetAccount);
 
-        return transferResponse;
+        createTransactions(sourceAccount, targetAccount, transfer, amount, creditedAmount);
+
+        return toTransferResponse(transfer);
     }
 
     public TransferResponse getTransferById(Long id) {
-        Transfer transfer = transferRepository.findById(id).orElse(null);
-
-        if (transfer == null) {
-            throw new ResourceNotFoundException("Transfer not found");
-        }
-
-        TransferResponse transferResponse = new TransferResponse();
-        transferResponse.setId(transfer.getId());
-        transferResponse.setSourceIban(transfer.getSourceIban());
-        transferResponse.setTargetIban(transfer.getTargetIban());
-        transferResponse.setAmount(transfer.getAmount());
-        transferResponse.setCurrency(transfer.getCurrency());
-        transferResponse.setTargetCurrency(transfer.getTargetCurrency());
-        transferResponse.setExchangeRate(transfer.getExchangeRate());
-        transferResponse.setConvertedAmount(transfer.getConvertedAmount());
-        transferResponse.setIdempotencyKey(transfer.getIdempotencyKey());
-        transferResponse.setCreatedAt(transfer.getCreatedAt());
-
-        return transferResponse;
+        Transfer transfer = transferRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Transfer not found"));
+        return toTransferResponse(transfer);
     }
 
     public TransfersPageResponse getTransfers(String iban, Instant fromDate, Instant toDate, int page, int size) {
-        Pageable pageable = PageRequest.of(page, size);
-
-        Page<Transfer> transfersPage = transferRepository.findAll(pageable);
-        List<Transfer> transfersList = transfersPage.getContent();
-        List<TransferResponse> transferResponses = new ArrayList<>();
-
-        for (Transfer transfer : transfersList) {
-            boolean ok = true;
-
-            if (iban != null && !iban.isBlank()) {
-                String normalizedIban = IbanValidator.normalizeIban(iban).toUpperCase();
-
-                if (!transfer.getSourceIban().equals(normalizedIban) && !transfer.getTargetIban().equals(normalizedIban)) {
-                    ok = false;
-                }
-            }
-
-            if (fromDate != null) {
-                if (transfer.getCreatedAt().isBefore(fromDate)) {
-                    ok = false;
-                }
-            }
-
-            if (toDate != null) {
-                if (transfer.getCreatedAt().isAfter(toDate)) {
-                    ok = false;
-                }
-            }
-
-            if (ok) {
-                TransferResponse transferResponse = new TransferResponse();
-                transferResponse.setId(transfer.getId());
-                transferResponse.setSourceIban(transfer.getSourceIban());
-                transferResponse.setTargetIban(transfer.getTargetIban());
-                transferResponse.setAmount(transfer.getAmount());
-                transferResponse.setCurrency(transfer.getCurrency());
-                transferResponse.setTargetCurrency(transfer.getTargetCurrency());
-                transferResponse.setExchangeRate(transfer.getExchangeRate());
-                transferResponse.setConvertedAmount(transfer.getConvertedAmount());
-                transferResponse.setIdempotencyKey(transfer.getIdempotencyKey());
-                transferResponse.setCreatedAt(transfer.getCreatedAt());
-
-                transferResponses.add(transferResponse);
-            }
+        String normalizedIban = null;
+        if (iban != null && !iban.isBlank()) {
+            normalizedIban = IbanValidator.normalizeIban(iban);
         }
 
+        Pageable pageable = PageRequest.of(page, size);
+        Page<Transfer> transferPage = transferRepository.search(normalizedIban, fromDate, toDate, pageable);
+
+        List<TransferResponse> content = transferPage.getContent().stream()
+                .map(this::toTransferResponse)
+                .toList();
+
         TransfersPageResponse response = new TransfersPageResponse();
-        response.setContent(transferResponses);
-        response.setTotalElements(transferResponses.size());
-        response.setTotalPages(1);
-        response.setNumber(page);
-        response.setSize(size);
+        response.setContent(content);
+        response.setTotalElements(transferPage.getTotalElements());
+        response.setTotalPages(transferPage.getTotalPages());
+        response.setNumber(transferPage.getNumber());
+        response.setSize(transferPage.getSize());
 
         return response;
     }
 
-    private BigDecimal convertToEur(BigDecimal amount, Currency currency) {
-        BigDecimal eurToRon = exchangeRateService.getExchangeRate(Currency.EUR);
+    private void validateSavingsDailyLimit(Account sourceAccount, BigDecimal currentAmount) {
+        ZoneId zone = ZoneOffset.UTC;
+        LocalDate today = LocalDate.now(zone);
 
+        Instant startOfDay = today.atStartOfDay(zone).toInstant();
+        Instant endOfDay = today.plusDays(1).atStartOfDay(zone).toInstant();
+
+        List<Transfer> transfersToday = transferRepository.findOutgoingForDay(
+                sourceAccount.getIban(), startOfDay, endOfDay
+        );
+
+        BigDecimal totalEur = ZERO;
+
+        for (Transfer transfer : transfersToday) {
+            totalEur = totalEur.add(convertToEur(transfer.getAmount(), transfer.getCurrency()));
+        }
+
+        totalEur = totalEur.add(convertToEur(currentAmount, sourceAccount.getCurrency()))
+                .setScale(2, RoundingMode.HALF_EVEN);
+
+        if (totalEur.compareTo(SAVINGS_DAILY_LIMIT_EUR) > 0) {
+            throw new BusinessConflictException("Daily savings transfer limit exceeded");
+        }
+    }
+
+    private void createTransactions(Account sourceAccount, Account targetAccount, Transfer transfer,
+                                    BigDecimal debitedAmount, BigDecimal creditedAmount) {
+
+        if (sourceAccount.getIban().equals(DataInitializer.SYSTEM_IBAN)) {
+            Transaction targetTransaction = new Transaction();
+            targetTransaction.setAccount(targetAccount);
+            targetTransaction.setTimestamp(transfer.getCreatedAt());
+            targetTransaction.setType(TransactionType.DEPOSIT);
+            targetTransaction.setAmount(creditedAmount);
+            targetTransaction.setCurrency(targetAccount.getCurrency());
+            targetTransaction.setBalanceAfter(targetAccount.getBalance());
+            targetTransaction.setCounterpartyIban(null);
+            targetTransaction.setTransferId(transfer.getId());
+            transactionRepository.save(targetTransaction);
+            return;
+        }
+
+        if (targetAccount.getIban().equals(DataInitializer.SYSTEM_IBAN)) {
+            Transaction sourceTransaction = new Transaction();
+            sourceTransaction.setAccount(sourceAccount);
+            sourceTransaction.setTimestamp(transfer.getCreatedAt());
+            sourceTransaction.setType(TransactionType.WITHDRAWAL);
+            sourceTransaction.setAmount(debitedAmount);
+            sourceTransaction.setCurrency(sourceAccount.getCurrency());
+            sourceTransaction.setBalanceAfter(sourceAccount.getBalance());
+            sourceTransaction.setCounterpartyIban(null);
+            sourceTransaction.setTransferId(transfer.getId());
+            transactionRepository.save(sourceTransaction);
+            return;
+        }
+
+        Transaction sourceTransaction = new Transaction();
+        sourceTransaction.setAccount(sourceAccount);
+        sourceTransaction.setTimestamp(transfer.getCreatedAt());
+        sourceTransaction.setType(TransactionType.TRANSFER_OUT);
+        sourceTransaction.setAmount(debitedAmount);
+        sourceTransaction.setCurrency(sourceAccount.getCurrency());
+        sourceTransaction.setBalanceAfter(sourceAccount.getBalance());
+        sourceTransaction.setCounterpartyIban(targetAccount.getIban());
+        sourceTransaction.setTransferId(transfer.getId());
+        transactionRepository.save(sourceTransaction);
+
+        Transaction targetTransaction = new Transaction();
+        targetTransaction.setAccount(targetAccount);
+        targetTransaction.setTimestamp(transfer.getCreatedAt());
+        targetTransaction.setType(TransactionType.TRANSFER_IN);
+        targetTransaction.setAmount(creditedAmount);
+        targetTransaction.setCurrency(targetAccount.getCurrency());
+        targetTransaction.setBalanceAfter(targetAccount.getBalance());
+        targetTransaction.setCounterpartyIban(sourceAccount.getIban());
+        targetTransaction.setTransferId(transfer.getId());
+        transactionRepository.save(targetTransaction);
+    }
+
+    private BigDecimal convertToEur(BigDecimal amount, Currency currency) {
         if (currency == Currency.EUR) {
             return amount.setScale(2, RoundingMode.HALF_EVEN);
         }
 
         BigDecimal sourceToRon = exchangeRateService.getExchangeRate(currency);
-        BigDecimal rateToEur = sourceToRon.divide(eurToRon, 6, RoundingMode.HALF_EVEN);
+        BigDecimal eurToRon = exchangeRateService.getExchangeRate(Currency.EUR);
 
+        BigDecimal rateToEur = sourceToRon.divide(eurToRon, 6, RoundingMode.HALF_EVEN);
         return amount.multiply(rateToEur).setScale(2, RoundingMode.HALF_EVEN);
     }
 
-    private boolean isSameDay(Instant instant1, Instant instant2) {
-        return instant1.atZone(java.time.ZoneOffset.UTC).toLocalDate().equals(instant2.atZone(java.time.ZoneOffset.UTC).toLocalDate());
+    private String normalizeRequiredIban(String iban, String message) {
+        String normalized = IbanValidator.normalizeIban(iban);
+        if (!IbanValidator.isValidIban(normalized)) {
+            throw new BadRequestException(message);
+        }
+        return normalized;
+    }
+
+    private BigDecimal normalizeAmount(BigDecimal amount) {
+        if (amount == null) {
+            throw new BadRequestException("Amount is required");
+        }
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BadRequestException("Amount must be greater than 0");
+        }
+        return amount.setScale(2, RoundingMode.HALF_EVEN);
+    }
+
+    private String normalizeIdempotencyKey(String key) {
+        if (key == null || key.isBlank()) {
+            return null;
+        }
+        return key.trim();
+    }
+
+    private TransferResponse toTransferResponse(Transfer transfer) {
+        TransferResponse response = new TransferResponse();
+        response.setId(transfer.getId());
+        response.setSourceIban(transfer.getSourceIban());
+        response.setTargetIban(transfer.getTargetIban());
+        response.setAmount(transfer.getAmount());
+        response.setCurrency(transfer.getCurrency());
+        response.setTargetCurrency(transfer.getTargetCurrency());
+        response.setExchangeRate(transfer.getExchangeRate());
+        response.setConvertedAmount(transfer.getConvertedAmount());
+        response.setIdempotencyKey(transfer.getIdempotencyKey());
+        response.setCreatedAt(transfer.getCreatedAt());
+        return response;
     }
 }

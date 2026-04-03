@@ -11,6 +11,8 @@ public class Account {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     private String ownerName;
+
+    @Column(nullable = false, unique = true)
     private String iban;
 
     @Enumerated(EnumType.STRING)

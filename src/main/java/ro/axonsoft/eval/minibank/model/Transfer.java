@@ -22,6 +22,8 @@ public class Transfer {
 
     private BigDecimal exchangeRate;
     private BigDecimal convertedAmount;
+
+    @Column(unique = true)
     private String idempotencyKey;
     private Instant createdAt;
 

@@ -4,7 +4,7 @@ import java.util.List;
 
 public class TransfersPageResponse {
     private List<TransferResponse> content;
-    private int totalElements;
+    private Long totalElements;
     private int totalPages;
     private int number;
     private int size;
@@ -15,7 +15,7 @@ public class TransfersPageResponse {
         this.content = content;
     }
 
-    public void setTotalElements(int totalElements) {
+    public void setTotalElements(Long totalElements) {
         this.totalElements = totalElements;
     }
 
@@ -43,7 +43,7 @@ public class TransfersPageResponse {
         return totalPages;
     }
 
-    public int getTotalElements() {
+    public Long getTotalElements() {
         return totalElements;
     }
 

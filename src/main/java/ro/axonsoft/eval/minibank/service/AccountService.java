@@ -29,42 +29,6 @@ public class AccountService {
         this.transactionRepository = transactionRepository;
     }
 
-    public AccountResponse createAccount(CreateAccountRequest request) {
-        String iban = request.getIban();
-
-        String normalizedIban = IbanValidator.normalizeIban(iban).toUpperCase();
-
-        if (!IbanValidator.isValidIban(normalizedIban)) {
-            throw new BadRequestException("Invalid IBAN");
-        }
-
-        if(accountRepository.existsByIban(normalizedIban)) {
-            throw new ResourceAlreadyExistsException("IBAN already exists");
-        }
-
-        Account account = new Account();
-
-        account.setOwnerName(request.getOwnerName());
-        account.setCurrency(request.getCurrency());
-        account.setAccountType(request.getAccountType());
-        account.setIban(normalizedIban);
-        account.setBalance(BigDecimal.ZERO.setScale(2));
-        account.setCreatedAt(Instant.now());
-
-        Account saveAcc = accountRepository.save(account);
-
-        AccountResponse accountResponse = new AccountResponse();
-
-        accountResponse.setId(saveAcc.getId());
-        accountResponse.setAccountType(saveAcc.getAccountType());
-        accountResponse.setIban(saveAcc.getIban());
-        accountResponse.setBalance(saveAcc.getBalance());
-        accountResponse.setCreatedAt(saveAcc.getCreatedAt());
-        accountResponse.setOwnerName(saveAcc.getOwnerName());
-        accountResponse.setCurrency(saveAcc.getCurrency());
-        return accountResponse;
-    }
-
     public AccountsPageResponse getAllAccounts(int page, int size) {
         Pageable pageable = PageRequest.of(page, size);
 
@@ -97,22 +61,44 @@ public class AccountService {
     }
 
     public AccountResponse getAccountById(Long id) {
-        Account account = accountRepository.findById(id).orElse(null);
+        Account account = accountRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Account not found"));
 
-        if(account == null){
-            throw new ResourceNotFoundException("Account not found");
+        return toAccountResponse(account);
+    }
+
+    public AccountResponse createAccount(CreateAccountRequest request) {
+        String normalizedIban = IbanValidator.normalizeIban(request.getIban());
+
+        if (!IbanValidator.isValidIban(normalizedIban)) {
+            throw new BadRequestException("Invalid IBAN");
         }
-        AccountResponse accountResponse = new AccountResponse();
 
-        accountResponse.setAccountType(account.getAccountType());
-        accountResponse.setIban(account.getIban());
-        accountResponse.setBalance(account.getBalance());
-        accountResponse.setCreatedAt(account.getCreatedAt());
-        accountResponse.setOwnerName(account.getOwnerName());
-        accountResponse.setCurrency(account.getCurrency());
-        accountResponse.setId(account.getId());
+        if (accountRepository.existsByIban(normalizedIban)) {
+            throw new ResourceAlreadyExistsException("IBAN already exists");
+        }
 
-        return accountResponse;
+        Account account = new Account();
+        account.setOwnerName(request.getOwnerName());
+        account.setIban(normalizedIban);
+        account.setCurrency(request.getCurrency());
+        account.setAccountType(request.getAccountType());
+        account.setBalance(new BigDecimal("0.00"));
+        account.setCreatedAt(Instant.now());
+
+        return toAccountResponse(accountRepository.save(account));
+    }
+
+    private AccountResponse toAccountResponse(Account account) {
+        AccountResponse response = new AccountResponse();
+        response.setId(account.getId());
+        response.setOwnerName(account.getOwnerName());
+        response.setIban(account.getIban());
+        response.setCurrency(account.getCurrency());
+        response.setAccountType(account.getAccountType());
+        response.setBalance(account.getBalance());
+        response.setCreatedAt(account.getCreatedAt());
+        return response;
     }
 
     public TransactionsPageResponse getAccountTransactions(Long accountId, int page, int size) {
@@ -123,7 +109,9 @@ public class AccountService {
         }
 
         Pageable pageable = PageRequest.of(page, size);
-        Page<Transaction> transactionsPage = transactionRepository.findByAccountIdOrderByTimestampAsc(accountId, pageable);
+        Page<Transaction> transactionsPage =
+                transactionRepository.findByAccountIdOrderByTimestampAscIdAsc(accountId, pageable);
+
         List<Transaction> transactionsList = transactionsPage.getContent();
         List<TransactionResponse> transactionResponses = new ArrayList<>();
 

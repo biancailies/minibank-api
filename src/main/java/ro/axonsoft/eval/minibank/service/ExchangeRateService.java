@@ -1,6 +1,7 @@
 package ro.axonsoft.eval.minibank.service;
 
 import org.springframework.stereotype.Service;
+import ro.axonsoft.eval.minibank.config.ExchangeRateProperties;
 import ro.axonsoft.eval.minibank.exception.BadRequestException;
 import ro.axonsoft.eval.minibank.model.Currency;
 
@@ -10,28 +11,22 @@ import java.util.Map;
 
 @Service
 public class ExchangeRateService {
+
+    private final ExchangeRateProperties exchangeRateProperties;
+
+    public ExchangeRateService(ExchangeRateProperties exchangeRateProperties) {
+        this.exchangeRateProperties = exchangeRateProperties;
+    }
+
     public BigDecimal getExchangeRate(Currency currency) {
-        switch (currency) {
-            case EUR:
-                return new BigDecimal("4.97");
-            case USD:
-                return new BigDecimal("4.56");
-            case GBP:
-                return new BigDecimal("5.73");
-            case RON:
-                return new BigDecimal("1.00");
-            default:
-                throw new BadRequestException("Unsupported currency");
+        BigDecimal rate = exchangeRateProperties.getRates().get(currency.name());
+        if (rate == null) {
+            throw new BadRequestException("Unsupported currency");
         }
+        return rate;
     }
 
     public Map<String, BigDecimal> getAllExchangeRates() {
-        Map<String, BigDecimal> rates = new LinkedHashMap<>();
-        rates.put("EUR", new BigDecimal("4.97"));
-        rates.put("USD", new BigDecimal("4.56"));
-        rates.put("GBP", new BigDecimal("5.73"));
-        rates.put("RON", new BigDecimal("1.00"));
-
-        return rates;
+        return new LinkedHashMap<>(exchangeRateProperties.getRates());
     }
 }

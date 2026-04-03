@@ -12,6 +12,9 @@ import java.time.Instant;
 
 @Component
 public class DataInitializer {
+
+    public static final String SYSTEM_IBAN = "RO49AAAA1B31007593840000";
+
     private final AccountRepository accountRepository;
 
     public DataInitializer(AccountRepository accountRepository) {
@@ -20,18 +23,18 @@ public class DataInitializer {
 
     @PostConstruct
     public void initAccount() {
-        if(accountRepository.existsByIban("RO49AAAA1B31007593840000")) {}
-        else {
-            Account account = new Account();
-
-            account.setAccountType(AccountType.CHECKING);
-            account.setBalance(BigDecimal.ZERO);
-            account.setCurrency(Currency.RON);
-            account.setOwnerName("SYSTEM_BANK");
-            account.setIban("RO49AAAA1B31007593840000");
-            account.setCreatedAt(Instant.now());
-
-            accountRepository.save(account);
+        if (accountRepository.existsByIban(SYSTEM_IBAN)) {
+            return;
         }
+
+        Account account = new Account();
+        account.setOwnerName("SYSTEM_BANK");
+        account.setIban(SYSTEM_IBAN);
+        account.setCurrency(Currency.RON);
+        account.setAccountType(AccountType.CHECKING);
+        account.setBalance(new BigDecimal("0.00"));
+        account.setCreatedAt(Instant.now());
+
+        accountRepository.save(account);
     }
 }

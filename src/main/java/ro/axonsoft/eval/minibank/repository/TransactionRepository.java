@@ -6,5 +6,5 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import ro.axonsoft.eval.minibank.model.Transaction;
 
 public interface TransactionRepository extends JpaRepository<Transaction, Long> {
-    Page<Transaction> findByAccountIdOrderByTimestampAsc(Long accountId, Pageable pageable);
+    Page<Transaction> findByAccountIdOrderByTimestampAscIdAsc(Long accountId, Pageable pageable);
 }

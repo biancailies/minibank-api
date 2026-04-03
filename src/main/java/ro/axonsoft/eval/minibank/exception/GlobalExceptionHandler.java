@@ -42,4 +42,10 @@ public class GlobalExceptionHandler {
         logger.error(e.getMessage(),e);
         return new ResponseEntity<>(new ErrorResponse("REJECTED", e.getMessage()), HttpStatus.BAD_REQUEST);
     }
+
+    @ExceptionHandler(BusinessConflictException.class)
+    public ResponseEntity<ErrorResponse> handleBusinessConflict(BusinessConflictException e) {
+        logger.error(e.getMessage(), e);
+        return new ResponseEntity<>(new ErrorResponse("REJECTED", e.getMessage()), HttpStatus.CONFLICT);
+    }
 }
