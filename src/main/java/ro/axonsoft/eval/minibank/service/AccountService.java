@@ -4,15 +4,15 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
-import ro.axonsoft.eval.minibank.Exception.ResourceAlreadyExistsException;
-import ro.axonsoft.eval.minibank.Exception.ResourceNotFoundException;
+import ro.axonsoft.eval.minibank.exception.BadRequestException;
+import ro.axonsoft.eval.minibank.exception.ResourceAlreadyExistsException;
+import ro.axonsoft.eval.minibank.exception.ResourceNotFoundException;
 import ro.axonsoft.eval.minibank.dto.AccountResponse;
 import ro.axonsoft.eval.minibank.dto.AccountsPageResponse;
 import ro.axonsoft.eval.minibank.dto.CreateAccountRequest;
 import ro.axonsoft.eval.minibank.model.Account;
-import ro.axonsoft.eval.minibank.model.AccountType;
-import ro.axonsoft.eval.minibank.model.Currency;
 import ro.axonsoft.eval.minibank.repository.AccountRepository;
+import ro.axonsoft.eval.minibank.util.IbanValidator;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -21,7 +21,7 @@ import java.util.List;
 
 @Service
 public class AccountService {
-    private AccountRepository accountRepository;
+    private final AccountRepository accountRepository;
 
     public AccountService(AccountRepository accountRepository) {
         this.accountRepository = accountRepository;
@@ -30,7 +30,13 @@ public class AccountService {
     public AccountResponse createAccount(CreateAccountRequest request) {
         String iban = request.getIban();
 
-        if(accountRepository.existsByIban(iban)){
+        String normalizedIban = IbanValidator.normalizeIban(iban).toUpperCase();
+
+        if (!IbanValidator.isValidIban(normalizedIban)) {
+            throw new BadRequestException("Invalid IBAN");
+        }
+
+        if(accountRepository.existsByIban(normalizedIban)) {
             throw new ResourceAlreadyExistsException("IBAN already exists");
         }
 
@@ -39,8 +45,8 @@ public class AccountService {
         account.setOwnerName(request.getOwnerName());
         account.setCurrency(request.getCurrency());
         account.setAccountType(request.getAccountType());
-        account.setIban(iban);
-        account.setBalance(BigDecimal.ZERO);
+        account.setIban(normalizedIban);
+        account.setBalance(BigDecimal.ZERO.setScale(2));
         account.setCreatedAt(Instant.now());
 
         Account saveAcc = accountRepository.save(account);

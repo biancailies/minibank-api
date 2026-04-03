@@ -3,10 +3,20 @@ package ro.axonsoft.eval.minibank.dto;
 import ro.axonsoft.eval.minibank.model.AccountType;
 import ro.axonsoft.eval.minibank.model.Currency;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+
 public class CreateAccountRequest {
+    @NotBlank
     private String ownerName;
+
+    @NotBlank
     private String iban;
+
+    @NotNull
     private Currency currency;
+
+    @NotNull
     private AccountType accountType;
 
     public CreateAccountRequest() {}

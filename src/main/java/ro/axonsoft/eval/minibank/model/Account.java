@@ -4,7 +4,6 @@ import jakarta.persistence.*;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.Date;
 
 @Entity
 public class Account {
@@ -24,6 +23,10 @@ public class Account {
     private Instant createdAt;
 
     public Account() {}
+
+    public void setId(Long id) {
+        this.id = id;
+    }
 
     public void setAccountType(AccountType accountType){
         this.accountType = accountType;

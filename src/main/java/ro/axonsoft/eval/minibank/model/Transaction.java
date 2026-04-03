@@ -26,5 +26,8 @@ public class Transaction {
     private String counterpartyIban;
     private Long transferId;
 
+    @Enumerated(EnumType.STRING)
+    private Currency currency;
+
     public Transaction() {}
 }
