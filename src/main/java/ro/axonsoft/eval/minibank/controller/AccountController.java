@@ -5,6 +5,7 @@ import org.springframework.web.bind.annotation.*;
 import ro.axonsoft.eval.minibank.dto.AccountResponse;
 import ro.axonsoft.eval.minibank.dto.AccountsPageResponse;
 import ro.axonsoft.eval.minibank.dto.CreateAccountRequest;
+import ro.axonsoft.eval.minibank.dto.TransactionsPageResponse;
 import ro.axonsoft.eval.minibank.service.AccountService;
 
 
@@ -30,6 +31,11 @@ public class AccountController {
     @GetMapping("/{id}")
     public AccountResponse getAccountById(@PathVariable long id) {
         return accountService.getAccountById(id);
+    }
+
+    @GetMapping("/{accountId}/transactions")
+    public TransactionsPageResponse getAccountTransactions(@PathVariable Long accountId, @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "10") int size) {
+        return accountService.getAccountTransactions(accountId, page, size);
     }
 
 }

@@ -4,14 +4,14 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import ro.axonsoft.eval.minibank.dto.*;
 import ro.axonsoft.eval.minibank.exception.BadRequestException;
 import ro.axonsoft.eval.minibank.exception.ResourceAlreadyExistsException;
 import ro.axonsoft.eval.minibank.exception.ResourceNotFoundException;
-import ro.axonsoft.eval.minibank.dto.AccountResponse;
-import ro.axonsoft.eval.minibank.dto.AccountsPageResponse;
-import ro.axonsoft.eval.minibank.dto.CreateAccountRequest;
 import ro.axonsoft.eval.minibank.model.Account;
+import ro.axonsoft.eval.minibank.model.Transaction;
 import ro.axonsoft.eval.minibank.repository.AccountRepository;
+import ro.axonsoft.eval.minibank.repository.TransactionRepository;
 import ro.axonsoft.eval.minibank.util.IbanValidator;
 
 import java.math.BigDecimal;
@@ -22,9 +22,11 @@ import java.util.List;
 @Service
 public class AccountService {
     private final AccountRepository accountRepository;
+    private final TransactionRepository transactionRepository;
 
-    public AccountService(AccountRepository accountRepository) {
+    public AccountService(AccountRepository accountRepository, TransactionRepository transactionRepository) {
         this.accountRepository = accountRepository;
+        this.transactionRepository = transactionRepository;
     }
 
     public AccountResponse createAccount(CreateAccountRequest request) {
@@ -112,4 +114,42 @@ public class AccountService {
 
         return accountResponse;
     }
+
+    public TransactionsPageResponse getAccountTransactions(Long accountId, int page, int size) {
+        Account account = accountRepository.findById(accountId).orElse(null);
+
+        if (account == null) {
+            throw new ResourceNotFoundException("Account not found");
+        }
+
+        Pageable pageable = PageRequest.of(page, size);
+        Page<Transaction> transactionsPage = transactionRepository.findByAccountIdOrderByTimestampAsc(accountId, pageable);
+        List<Transaction> transactionsList = transactionsPage.getContent();
+        List<TransactionResponse> transactionResponses = new ArrayList<>();
+
+        for (Transaction transaction : transactionsList) {
+            TransactionResponse transactionResponse = new TransactionResponse();
+
+            transactionResponse.setId(transaction.getId());
+            transactionResponse.setTimestamp(transaction.getTimestamp());
+            transactionResponse.setType(transaction.getType());
+            transactionResponse.setAmount(transaction.getAmount());
+            transactionResponse.setCurrency(transaction.getCurrency());
+            transactionResponse.setBalanceAfter(transaction.getBalanceAfter());
+            transactionResponse.setCounterpartyIban(transaction.getCounterpartyIban());
+            transactionResponse.setTransferId(transaction.getTransferId());
+
+            transactionResponses.add(transactionResponse);
+        }
+
+        TransactionsPageResponse response = new TransactionsPageResponse();
+        response.setContent(transactionResponses);
+        response.setTotalElements(transactionsPage.getTotalElements());
+        response.setTotalPages(transactionsPage.getTotalPages());
+        response.setNumber(transactionsPage.getNumber());
+        response.setSize(transactionsPage.getSize());
+
+        return response;
+    }
+
 }

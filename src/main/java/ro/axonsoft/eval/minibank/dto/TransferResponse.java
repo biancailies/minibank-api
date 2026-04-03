@@ -1,31 +1,24 @@
-package ro.axonsoft.eval.minibank.model;
+package ro.axonsoft.eval.minibank.dto;
 
-import jakarta.persistence.*;
+import jakarta.persistence.Enumerated;
+import ro.axonsoft.eval.minibank.model.Currency;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 
-@Entity
-public class Transfer {
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
+public class TransferResponse {
     private Long id;
     private String sourceIban;
     private String targetIban;
     private BigDecimal amount;
-
-    @Enumerated(EnumType.STRING)
     private Currency currency;
-
-    @Enumerated(EnumType.STRING)
     private Currency targetCurrency;
-
     private BigDecimal exchangeRate;
     private BigDecimal convertedAmount;
     private String idempotencyKey;
     private Instant createdAt;
 
-    public Transfer() {}
+    public TransferResponse(){}
 
     public void setId(Long id) {
         this.id = id;
@@ -67,43 +60,43 @@ public class Transfer {
         this.createdAt = createdAt;
     }
 
-    public Long getId() {
-        return id;
-    }
-
-    public String getSourceIban() {
-        return sourceIban;
-    }
-
-    public String getTargetIban() {
-        return targetIban;
-    }
-
-    public BigDecimal getAmount() {
-        return amount;
-    }
-
-    public Currency getCurrency() {
-        return currency;
-    }
-
-    public Currency getTargetCurrency() {
-        return targetCurrency;
-    }
-
-    public BigDecimal getExchangeRate() {
-        return exchangeRate;
-    }
-
-    public BigDecimal getConvertedAmount() {
-        return convertedAmount;
+    public Instant getCreatedAt() {
+        return createdAt;
     }
 
     public String getIdempotencyKey() {
         return idempotencyKey;
     }
 
-    public Instant getCreatedAt() {
-        return createdAt;
+    public BigDecimal getConvertedAmount() {
+        return convertedAmount;
+    }
+
+    public BigDecimal getExchangeRate() {
+        return exchangeRate;
+    }
+
+    public Currency getTargetCurrency() {
+        return targetCurrency;
+    }
+
+    public Currency getCurrency() {
+        return currency;
+    }
+
+    public BigDecimal getAmount() {
+        return amount;
+    }
+
+    public String getTargetIban() {
+        return targetIban;
+    }
+
+    public String getSourceIban() {
+        return sourceIban;
+    }
+
+    public Long getId() {
+        return id;
     }
 }
